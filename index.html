@@ -1,0 +1,404 @@
+import { useState, useEffect, useMemo } from "react";
+import {
+  BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from "recharts";
+
+const FLAG_COLORS = [
+  "#6366F1","#10B981","#F59E0B","#EF4444","#3B82F6",
+  "#8B5CF6","#EC4899","#14B8A6","#F97316","#84CC16",
+];
+
+function getFlagColor(flags, flagName) {
+  const idx = flags.findIndex(f => f.name === flagName);
+  return FLAG_COLORS[idx % FLAG_COLORS.length] ?? "#94A3B8";
+}
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function useLocalStorage(key, init) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : init; }
+    catch { return init; }
+  });
+  useEffect(() => { localStorage.setItem(key, JSON.stringify(val)); }, [key, val]);
+  return [val, setVal];
+}
+
+function filterByDuration(entries, duration) {
+  const now = new Date();
+  return entries.filter(e => {
+    const d = new Date(e.date);
+    if (duration === "7d")    return (now - d) / 86400000 <= 7;
+    if (duration === "30d")   return (now - d) / 86400000 <= 30;
+    if (duration === "month") return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    return true;
+  });
+}
+
+function buildChartData(entries, flagFilter) {
+  const filtered = flagFilter === "all" ? entries : entries.filter(e => e.flag === flagFilter);
+  const byDate = {};
+  filtered.forEach(e => {
+    if (!byDate[e.date]) byDate[e.date] = {};
+    byDate[e.date][e.flag] = (byDate[e.date][e.flag] || 0) + 1;
+  });
+  return Object.entries(byDate)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, flags]) => ({ date, ...flags }));
+}
+
+// ── Shared styles ─────────────────────────────────────────────────────────────
+const inputS = {
+  width: "100%", padding: "9px 12px", borderRadius: 8,
+  border: "1px solid #E0E0E0", fontSize: 13, color: "#111",
+  background: "#FAFAFA", fontFamily: "inherit", boxSizing: "border-box",
+};
+const labelWrap = { display:"flex", flexDirection:"column", gap:5, flex:1, minWidth:0 };
+const labelText  = { fontSize:11, fontWeight:600, color:"#888", letterSpacing:"0.06em", textTransform:"uppercase" };
+const primaryBtn = {
+  padding:"9px 18px", borderRadius:8, border:"none",
+  background:"#111", color:"#fff", fontSize:13, fontWeight:600,
+  cursor:"pointer", fontFamily:"inherit",
+};
+
+function Page({ children }) {
+  return (
+    <div style={{ maxWidth:760, margin:"0 auto", padding:"88px 20px 64px", display:"flex", flexDirection:"column", gap:10 }}>
+      {children}
+    </div>
+  );
+}
+
+function Card({ title, subtitle, children, noPad }) {
+  return (
+    <div style={{ background:"#fff", border:"1px solid #E5E5E5", borderRadius:14, overflow:"hidden" }}>
+      {(title || subtitle) && (
+        <div style={{ padding:"18px 20px 0" }}>
+          {title    && <h2 style={{ margin:0, fontSize:15, fontWeight:700, color:"#111", letterSpacing:"-0.01em" }}>{title}</h2>}
+          {subtitle && <p  style={{ margin:"4px 0 0", fontSize:13, color:"#888" }}>{subtitle}</p>}
+        </div>
+      )}
+      <div style={noPad ? undefined : { padding:20 }}>{children}</div>
+    </div>
+  );
+}
+
+function Empty({ children }) {
+  return <div style={{ padding:"36px 0", textAlign:"center", fontSize:13, color:"#AAA", lineHeight:1.6 }}>{children}</div>;
+}
+
+function Stat({ label, value }) {
+  return (
+    <div style={{ flex:1, background:"#fff", border:"1px solid #E5E5E5", borderRadius:12, padding:"14px 16px" }}>
+      <div style={{ fontSize:24, fontWeight:700, color:"#111", letterSpacing:"-0.03em" }}>{value}</div>
+      <div style={{ fontSize:10, color:"#999", marginTop:2, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>{label}</div>
+    </div>
+  );
+}
+
+// ── Nav ───────────────────────────────────────────────────────────────────────
+function Nav({ view, setView }) {
+  const tabs = [
+    { id:"settings", label:"Settings" },
+    { id:"input",    label:"Input" },
+    { id:"viz",      label:"Visualization" },
+  ];
+  return (
+    <nav style={{
+      position:"fixed", top:0, left:0, right:0, zIndex:50,
+      background:"rgba(250,250,250,0.93)", backdropFilter:"blur(14px)",
+      borderBottom:"1px solid #E8E8E8",
+      display:"flex", alignItems:"center", justifyContent:"space-between",
+      padding:"0 24px", height:54,
+    }}>
+      <span style={{ fontWeight:800, fontSize:14, letterSpacing:"-0.03em", color:"#111" }}>◆ History</span>
+      <div style={{ display:"flex", gap:3 }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setView(t.id)} style={{
+            padding:"5px 14px", borderRadius:7, border:"none", cursor:"pointer",
+            fontSize:13, fontWeight:500, transition:"all .15s",
+            background: view === t.id ? "#111" : "transparent",
+            color:       view === t.id ? "#fff"  : "#666",
+          }}>{t.label}</button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function SettingsPage({ flags, setFlags }) {
+  const [inp, setInp] = useState("");
+
+  function add() {
+    const n = inp.trim();
+    if (!n || flags.find(f => f.name.toLowerCase() === n.toLowerCase())) return;
+    setFlags(p => [...p, { name:n, id:Date.now() }]);
+    setInp("");
+  }
+
+  return (
+    <Page>
+      <Card title="Flags" subtitle="Flags are categories you can attach to any entry.">
+        <div style={{ display:"flex", gap:8, marginBottom:20 }}>
+          <input value={inp} onChange={e => setInp(e.target.value)}
+            onKeyDown={e => e.key==="Enter" && add()}
+            placeholder="Flag name…" style={inputS} />
+          <button onClick={add} style={primaryBtn}>Add</button>
+        </div>
+
+        {flags.length === 0
+          ? <Empty>No flags yet — add one above.</Empty>
+          : <ul style={{ margin:0, padding:0, listStyle:"none", display:"flex", flexDirection:"column", gap:6 }}>
+              {flags.map((f, i) => (
+                <li key={f.id} style={{
+                  display:"flex", alignItems:"center", justifyContent:"space-between",
+                  padding:"10px 14px", borderRadius:10,
+                  background:"#FAFAFA", border:"1px solid #EEEEEE",
+                }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <span style={{ width:9, height:9, borderRadius:"50%", background:FLAG_COLORS[i%FLAG_COLORS.length], flexShrink:0 }} />
+                    <span style={{ fontSize:14, fontWeight:500 }}>{f.name}</span>
+                  </div>
+                  <button onClick={() => setFlags(p => p.filter(x => x.id !== f.id))} style={{
+                    background:"none", border:"none", cursor:"pointer",
+                    fontSize:12, color:"#BBB", padding:"3px 8px", borderRadius:6,
+                  }}
+                    onMouseEnter={e => e.target.style.color="#EF4444"}
+                    onMouseLeave={e => e.target.style.color="#BBB"}
+                  >Delete</button>
+                </li>
+              ))}
+            </ul>
+        }
+      </Card>
+    </Page>
+  );
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+function InputPage({ flags, entries, setEntries }) {
+  const [date, setDate]       = useState(todayStr());
+  const [flag, setFlag]       = useState(() => flags[0]?.name ?? "");
+  const [context, setContext] = useState("");
+  const [err, setErr]         = useState(false);
+
+  useEffect(() => { if (flags.length && !flag) setFlag(flags[0].name); }, [flags]);
+
+  function submit() {
+    if (!flag || !context.trim()) { setErr(true); setTimeout(()=>setErr(false),500); return; }
+    setEntries(p => [{ id:Date.now(), date, flag, context:context.trim() }, ...p]);
+    setContext("");
+    setDate(todayStr());
+  }
+
+  const sorted = [...entries].sort((a,b) => b.date.localeCompare(a.date)||b.id-a.id);
+
+  return (
+    <Page>
+      <Card title="New Entry">
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          <div style={{ display:"flex", gap:12 }}>
+            <label style={labelWrap}>
+              <span style={labelText}>Date</span>
+              <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inputS} />
+            </label>
+            <label style={labelWrap}>
+              <span style={labelText}>Flag</span>
+              <select value={flag} onChange={e=>setFlag(e.target.value)} style={inputS}>
+                {flags.length===0 && <option value="">— create flags in Settings —</option>}
+                {flags.map(f=><option key={f.id} value={f.name}>{f.name}</option>)}
+              </select>
+            </label>
+          </div>
+          <label style={labelWrap}>
+            <span style={labelText}>Context</span>
+            <textarea
+              value={context} onChange={e=>setContext(e.target.value)}
+              placeholder="Describe what happened…" rows={3}
+              style={{
+                ...inputS, resize:"vertical", minHeight:76,
+                borderColor: err ? "#EF4444" : "#E0E0E0",
+                animation: err ? "shake .35s ease" : "none",
+              }}
+            />
+          </label>
+          <button onClick={submit} disabled={flags.length===0}
+            style={{ ...primaryBtn, alignSelf:"flex-end" }}>Add entry</button>
+        </div>
+      </Card>
+
+      <Card title={`Stack · ${entries.length} ${entries.length===1?"entry":"entries"}`} noPad>
+        {entries.length === 0
+          ? <div style={{ padding:20 }}><Empty>No entries yet.</Empty></div>
+          : <>
+              <div style={{
+                display:"grid", gridTemplateColumns:"108px 110px 1fr 32px",
+                padding:"8px 16px", fontSize:10, fontWeight:700, color:"#BBB",
+                letterSpacing:"0.08em", textTransform:"uppercase",
+                borderBottom:"1px solid #EEEEEE",
+              }}>
+                <span>Date</span><span>Flag</span><span>Context</span><span></span>
+              </div>
+              {sorted.map((e,i)=>{
+                const color = getFlagColor(flags, e.flag);
+                return (
+                  <div key={e.id} style={{
+                    display:"grid", gridTemplateColumns:"108px 110px 1fr 32px",
+                    alignItems:"start", padding:"11px 16px",
+                    borderLeft:`3px solid ${color}`,
+                    borderBottom: i<sorted.length-1 ? "1px solid #F5F5F5" : "none",
+                    transition:"background .1s",
+                  }}
+                    onMouseEnter={e=>e.currentTarget.style.background="#FAFAFA"}
+                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}
+                  >
+                    <span style={{ fontSize:12, color:"#777", paddingTop:2 }}>{e.date}</span>
+                    <span>
+                      <span style={{
+                        display:"inline-block", padding:"2px 8px", borderRadius:999,
+                        fontSize:11, fontWeight:600, background:`${color}18`, color,
+                      }}>{e.flag}</span>
+                    </span>
+                    <span style={{ fontSize:13, color:"#333", lineHeight:1.55, wordBreak:"break-word" }}>{e.context}</span>
+                    <button onClick={()=>setEntries(p=>p.filter(x=>x.id!==e.id))} style={{
+                      background:"none", border:"none", cursor:"pointer",
+                      fontSize:18, color:"#DDD", padding:0, justifySelf:"center", lineHeight:1,
+                    }}
+                      onMouseEnter={ev=>ev.target.style.color="#EF4444"}
+                      onMouseLeave={ev=>ev.target.style.color="#DDD"}
+                    >×</button>
+                  </div>
+                );
+              })}
+            </>
+        }
+      </Card>
+    </Page>
+  );
+}
+
+// ── Visualization ─────────────────────────────────────────────────────────────
+function VizPage({ flags, entries }) {
+  const [flagFilter, setFlagFilter] = useState("all");
+  const [duration,   setDuration]   = useState("all");
+  const [chartType,  setChartType]  = useState("bar");
+
+  const durationFiltered = useMemo(()=>filterByDuration(entries,duration),[entries,duration]);
+  const chartData        = useMemo(()=>buildChartData(durationFiltered,flagFilter),[durationFiltered,flagFilter]);
+
+  const activeFlags = flagFilter==="all"
+    ? [...new Set(durationFiltered.map(e=>e.flag))]
+    : [flagFilter];
+
+  const totalInWindow = durationFiltered.filter(
+    e => flagFilter==="all" || e.flag===flagFilter
+  ).length;
+
+  return (
+    <Page>
+      <Card title="Filters">
+        <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+          {[
+            { lbl:"Flag", val:flagFilter, set:setFlagFilter,
+              opts:[{v:"all",l:"All flags"},...flags.map(f=>({v:f.name,l:f.name}))] },
+            { lbl:"Period", val:duration, set:setDuration,
+              opts:[{v:"7d",l:"Past 7 days"},{v:"30d",l:"Past 30 days"},{v:"month",l:"This month"},{v:"all",l:"All time"}] },
+            { lbl:"Chart", val:chartType, set:setChartType,
+              opts:[{v:"bar",l:"Bar chart"},{v:"line",l:"Line chart"}] },
+          ].map(({lbl,val,set,opts})=>(
+            <label key={lbl} style={{ ...labelWrap, minWidth:130 }}>
+              <span style={labelText}>{lbl}</span>
+              <select value={val} onChange={e=>set(e.target.value)} style={inputS}>
+                {opts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{ display:"flex", gap:10 }}>
+        <Stat label="Entries in window" value={totalInWindow} />
+        <Stat label="Days with data"    value={chartData.length} />
+        <Stat label="Flags tracked"     value={activeFlags.length} />
+      </div>
+
+      <Card title="Chart">
+        {chartData.length===0
+          ? <Empty>No data for the selected filters.</Empty>
+          : <div style={{ width:"100%", height:300 }}>
+              <ResponsiveContainer>
+                {chartType==="bar" ? (
+                  <BarChart data={chartData} barCategoryGap="35%">
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" vertical={false}/>
+                    <XAxis dataKey="date" tick={{fontSize:11,fill:"#AAA"}} tickLine={false} axisLine={false}/>
+                    <YAxis allowDecimals={false} tick={{fontSize:11,fill:"#AAA"}} tickLine={false} axisLine={false} width={24}/>
+                    <Tooltip contentStyle={{borderRadius:10,border:"1px solid #E5E5E5",fontSize:12,boxShadow:"0 4px 16px rgba(0,0,0,.06)"}} cursor={{fill:"#F5F5F5"}}/>
+                    <Legend iconType="circle" iconSize={7} wrapperStyle={{fontSize:12,paddingTop:12}}/>
+                    {activeFlags.map(f=>(
+                      <Bar key={f} dataKey={f} fill={getFlagColor(flags,f)} radius={[4,4,0,0]}/>
+                    ))}
+                  </BarChart>
+                ) : (
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" vertical={false}/>
+                    <XAxis dataKey="date" tick={{fontSize:11,fill:"#AAA"}} tickLine={false} axisLine={false}/>
+                    <YAxis allowDecimals={false} tick={{fontSize:11,fill:"#AAA"}} tickLine={false} axisLine={false} width={24}/>
+                    <Tooltip contentStyle={{borderRadius:10,border:"1px solid #E5E5E5",fontSize:12,boxShadow:"0 4px 16px rgba(0,0,0,.06)"}}/>
+                    <Legend iconType="circle" iconSize={7} wrapperStyle={{fontSize:12,paddingTop:12}}/>
+                    {activeFlags.map(f=>(
+                      <Line key={f} type="monotone" dataKey={f} stroke={getFlagColor(flags,f)}
+                        strokeWidth={2.5} dot={{r:4,strokeWidth:0,fill:getFlagColor(flags,f)}} activeDot={{r:6}}/>
+                    ))}
+                  </LineChart>
+                )}
+              </ResponsiveContainer>
+            </div>
+        }
+      </Card>
+    </Page>
+  );
+}
+
+// ── Root ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [view,    setView]    = useState("input");
+  const [flags,   setFlags]   = useLocalStorage("ht_flags",   []);
+  const [entries, setEntries] = useLocalStorage("ht_entries", []);
+
+  return (
+    <div style={{
+      minHeight:"100vh", background:"#F4F4F4",
+      fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif",
+      color:"#111",
+    }}>
+      <style>{`
+        *{box-sizing:border-box}
+        input:focus,select:focus,textarea:focus{
+          outline:none;
+          border-color:#6366F1!important;
+          box-shadow:0 0 0 3px rgba(99,102,241,.1);
+        }
+        button{transition:opacity .15s}
+        button:hover:not(:disabled){opacity:.75}
+        button:disabled{opacity:.35;cursor:not-allowed}
+        @keyframes shake{
+          0%,100%{transform:translateX(0)}
+          20%,60%{transform:translateX(-5px)}
+          40%,80%{transform:translateX(5px)}
+        }
+        ::-webkit-scrollbar{width:5px}
+        ::-webkit-scrollbar-thumb{background:#DDD;border-radius:3px}
+      `}</style>
+
+      <Nav view={view} setView={setView}/>
+
+      {view==="settings" && <SettingsPage flags={flags} setFlags={setFlags}/>}
+      {view==="input"    && <InputPage    flags={flags} entries={entries} setEntries={setEntries}/>}
+      {view==="viz"      && <VizPage      flags={flags} entries={entries}/>}
+    </div>
+  );
+}
